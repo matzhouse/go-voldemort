@@ -1,6 +1,8 @@
 go-voldemort
 ============
 
+### DEFINITELY NOT PRODUCTION READY
+
 Voldermort client written in Go
 
 The client allows you to either use nice ready made methods (get/put etc) or expose the Voldemort protobufs objects to create your own requests.
