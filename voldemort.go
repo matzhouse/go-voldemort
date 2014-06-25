@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 	vproto "github.com/matzhouse/go-voldemort-protobufs"
-	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 type VoldemortConn struct {
@@ -17,7 +17,7 @@ type VoldemortConn struct {
 	mu sync.Mutex
 }
 
-func DialVoldemort(raddr *net.TCPAddr, proto string) (c *VoldemortConn, err error) {
+func Dial(raddr *net.TCPAddr, proto string) (c *VoldemortConn, err error) {
 
 	conn, err := net.DialTCP("tcp", nil, raddr)
 
@@ -57,8 +57,7 @@ func DialVoldemort(raddr *net.TCPAddr, proto string) (c *VoldemortConn, err erro
 
 }
 
-// Nice getter for a string key returning a string value
-func Get(conn *VoldemortConn, store string, key string) (value string, err error) {
+func get(conn *VoldemortConn, store string, req *vproto.GetRequest) (resp *vproto.GetResponse, err error) {
 
 	Routingdecision := true
 	rt := vproto.RequestType(0)
@@ -69,33 +68,171 @@ func Get(conn *VoldemortConn, store string, key string) (value string, err error
 		ShouldRoute: &Routingdecision,
 	}
 
-	req := &vproto.GetRequest{Key: []byte(key)}
-
 	vr.Get = req
 
 	input, err := proto.Marshal(vr)
-
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	output, err := Do(conn, input)
 
 	if err != nil {
+		return nil, err
+	}
+
+	// no record found
+	if output == nil {
+		return nil, nil
+	}
+
+	resp = new(vproto.GetResponse)
+
+	err = proto.Unmarshal(output, resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+
+}
+
+func put(conn *VoldemortConn, store string, req *vproto.PutRequest) (resp *vproto.PutResponse, err error) {
+
+	Routingdecision := true
+	rt := vproto.RequestType(2)
+
+	vr := &vproto.VoldemortRequest{
+		Store:       &store,
+		Type:        &rt,
+		ShouldRoute: &Routingdecision,
+	}
+
+	vr.Put = req
+
+	input, err := proto.Marshal(vr)
+	if err != nil {
+		return nil, err
+	}
+
+	output, err := Do(conn, input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// no record found
+	if output == nil {
+		return nil, nil
+	}
+
+	resp = new(vproto.PutResponse)
+
+	err = proto.Unmarshal(output, resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+
+}
+
+func getversion(conn *VoldemortConn, store string, key string) (vc *vproto.VectorClock, err error) {
+
+	req := &vproto.GetRequest{
+		Key: []byte(key),
+	}
+
+	resp, err := get(conn, store, req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp == nil {
+		// return new VectorClock
+		vc := new(vproto.VectorClock)
+		now := int64(time.Now().Unix())
+		vc.Timestamp = &now
+
+		id := int32(0)
+		v := int64(1) // 1-32767
+
+		ce := &vproto.ClockEntry{
+			NodeId:  &id,
+			Version: &v,
+		}
+
+		vc.Entries = append(vc.Entries, ce)
+
+		return vc, nil
+	} else {
+		now := int64(time.Now().Unix())
+
+		cv := resp.Versioned[0].Version.Entries[0].Version
+		ncv := int64(1) + *cv
+
+		resp.Versioned[0].Version.Entries[0].Version = &ncv
+
+		resp.Versioned[0].Version.Timestamp = &now
+
+		return resp.Versioned[0].Version, nil
+	}
+
+}
+
+// Nice getter for a string key returning a string value
+func Get(conn *VoldemortConn, store string, key string) (value string, err error) {
+
+	req := &vproto.GetRequest{
+		Key: []byte(key),
+	}
+
+	resp, err := get(conn, store, req)
+
+	if err != nil {
 		return "", err
 	}
 
-	resp := new(vproto.GetResponse)
-
-	err = proto.Unmarshal(output, resp)
-
-	if err != nil {
-		log.Fatal("unmarshaling error: ", err)
+	// null response
+	if resp == nil {
+		return "", nil
 	}
 
 	vd := resp.GetVersioned()
 
-	return string(vd[0].GetValue()), nil
+	return string(vd[0].GetValue()), nil // simple get newest
+
+}
+
+func Put(conn *VoldemortConn, store string, key string, value string) (b bool, err error) {
+
+	vc, err := getversion(conn, store, key)
+
+	if err != nil {
+		return false, err
+	}
+
+	req := &vproto.PutRequest{
+		Key: []byte(key),
+		Versioned: &vproto.Versioned{
+			Value:   []byte(value),
+			Version: vc,
+		},
+	}
+
+	resp, err := put(conn, store, req)
+
+	if err != nil {
+		return false, err
+	}
+
+	if resp != nil {
+		if resp.Error != nil {
+			return false, errors.New(*resp.Error.ErrorMessage)
+		}
+	}
+
+	return true, nil
 
 }
 
@@ -136,7 +273,7 @@ func Do(conn *VoldemortConn, input []byte) (output []byte, err error) {
 	var buflen [4]byte
 	n, err := conn.c.Read(buflen[0:4])
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	// write correct length of response to buffer
@@ -145,8 +282,12 @@ func Do(conn *VoldemortConn, input []byte) (output []byte, err error) {
 	var respLen uint32
 	err = binary.Read(buf, binary.BigEndian, &respLen)
 
+	if respLen == 0 {
+		return nil, nil
+	}
+
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	buf.Reset()
