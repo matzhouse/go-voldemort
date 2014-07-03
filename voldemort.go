@@ -4,17 +4,42 @@ import (
 	"bytes"
 	proto "code.google.com/p/goprotobuf/proto"
 	"encoding/binary"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	vproto "github.com/matzhouse/go-voldemort-protobufs"
+	"io"
+	"log"
+	"math"
 	"net"
 	"sync"
 	"time"
 )
 
+// The VoldemortConn struct is used to hold all the data for the Voldemort cluster you need to query
 type VoldemortConn struct {
-	c  *net.TCPConn
+	// TCP connection used to talk to Voldemort instance
+	c *net.TCPConn
+
+	// Information about the Voldemort cluster (received from the cluster once you connect to it)
+	cl *Cluster
+
+	// A simple mutex to make the conn thread safe
 	mu sync.Mutex
+}
+
+type Cluster struct {
+	Name    string   `xml:"name"`
+	Servers []Server `xml:"server"`
+}
+
+type Server struct {
+	Id         int    `xml:"id"`
+	Host       string `xml:"host"`
+	Http       int    `xml:"http-port"`
+	Socket     int    `xml:"socket-port"`
+	Partitions string `xml:"partitions"`
+	State      bool
 }
 
 func Dial(raddr *net.TCPAddr, proto string) (c *VoldemortConn, err error) {
@@ -25,7 +50,7 @@ func Dial(raddr *net.TCPAddr, proto string) (c *VoldemortConn, err error) {
 		return nil, err
 	}
 
-	conn.Write([]byte("pb0"))
+	conn.Write([]byte(proto))
 
 	result := bytes.NewBuffer(nil)
 	var buf [2]byte // protocol response only returns a 2 byte response - ok or no
@@ -53,19 +78,55 @@ func Dial(raddr *net.TCPAddr, proto string) (c *VoldemortConn, err error) {
 	vc.c = conn
 	vc.c.SetNoDelay(true)
 
+	cl, err := bootstrap(vc)
+
+	if err != nil {
+		log.Println(err)
+		log.Println("warning - this client will only be able to talk to the current node")
+	}
+
+	go watchcluster()
+
+	vc.cl = cl
+
 	return vc, nil
 
 }
 
-func get(conn *VoldemortConn, store string, req *vproto.GetRequest) (resp *vproto.GetResponse, err error) {
+func bootstrap(vc *VoldemortConn) (n *Cluster, err error) {
 
-	Routingdecision := true
+	n, err = getclusterdata(vc)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// update the state
+	for k, v := range n.Servers {
+		saddr := fmt.Sprintf("%s:%d", v.Host, v.Socket)
+		if saddr == vc.c.RemoteAddr().String() {
+			vc.cl.Servers[k].State = true
+		}
+	}
+
+	fmt.Println(vc.cl)
+
+	return n, nil
+
+}
+
+func watchcluster() {
+
+}
+
+func get(conn *VoldemortConn, store string, req *vproto.GetRequest, shouldroute bool) (resp *vproto.GetResponse, err error) {
+
 	rt := vproto.RequestType(0)
 
 	vr := &vproto.VoldemortRequest{
 		Store:       &store,
 		Type:        &rt,
-		ShouldRoute: &Routingdecision,
+		ShouldRoute: &shouldroute,
 	}
 
 	vr.Get = req
@@ -90,6 +151,11 @@ func get(conn *VoldemortConn, store string, req *vproto.GetRequest) (resp *vprot
 
 	err = proto.Unmarshal(output, resp)
 	if err != nil {
+		return nil, err
+	}
+
+	if resp.Error != nil {
+		err = errors.New(*resp.Error.ErrorMessage)
 		return nil, err
 	}
 
@@ -137,13 +203,46 @@ func put(conn *VoldemortConn, store string, req *vproto.PutRequest) (resp *vprot
 
 }
 
+func getclusterdata(conn *VoldemortConn) (cl *Cluster, err error) {
+
+	req := &vproto.GetRequest{
+		Key: []byte("cluster.xml"),
+	}
+
+	resp, err := get(conn, "metadata", req, false)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if resp == nil {
+		err = errors.New("metadata not available")
+		return nil, err
+	}
+
+	cl = &Cluster{}
+
+	err = xml.Unmarshal([]byte(resp.GetVersioned()[0].GetValue()), cl)
+
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Println(cl)
+
+	conn.cl = cl
+
+	return cl, nil
+
+}
+
 func getversion(conn *VoldemortConn, store string, key string) (vc *vproto.VectorClock, err error) {
 
 	req := &vproto.GetRequest{
 		Key: []byte(key),
 	}
 
-	resp, err := get(conn, store, req)
+	resp, err := get(conn, store, req, true)
 	if err != nil {
 		return nil, err
 	}
@@ -183,11 +282,16 @@ func getversion(conn *VoldemortConn, store string, key string) (vc *vproto.Vecto
 // Nice getter for a string key returning a string value
 func Get(conn *VoldemortConn, store string, key string) (value string, err error) {
 
+	if store == "" || key == "" {
+		err = errors.New("store and key cannot be empty")
+		return "", err
+	}
+
 	req := &vproto.GetRequest{
 		Key: []byte(key),
 	}
 
-	resp, err := get(conn, store, req)
+	resp, err := get(conn, store, req, true)
 
 	if err != nil {
 		return "", err
@@ -205,6 +309,11 @@ func Get(conn *VoldemortConn, store string, key string) (value string, err error
 }
 
 func Put(conn *VoldemortConn, store string, key string, value string) (b bool, err error) {
+
+	if store == "" || key == "" {
+		err = errors.New("store and key cannot be empty")
+		return false, err
+	}
 
 	vc, err := getversion(conn, store, key)
 
@@ -240,11 +349,17 @@ func Close(conn *VoldemortConn) {
 	conn.c.Close()
 }
 
+func reconnect(conn *VoldemortConn) {
+
+}
+
 // creates the voldemort request <4 byte length, big endian encoded><message bytes> and receives the same
 func Do(conn *VoldemortConn, input []byte) (output []byte, err error) {
 
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
+
+	noconn := errors.New("tcp connection not available")
 
 	buf := new(bytes.Buffer)
 
@@ -253,10 +368,6 @@ func Do(conn *VoldemortConn, input []byte) (output []byte, err error) {
 
 	err = binary.Write(buf, binary.BigEndian, length)
 
-	if err != nil {
-		return nil, err
-	}
-
 	_, err = buf.Write(input)
 
 	if err != nil {
@@ -264,7 +375,15 @@ func Do(conn *VoldemortConn, input []byte) (output []byte, err error) {
 	}
 
 	// send the command to voldemort
-	conn.c.Write(buf.Bytes())
+	_, err = conn.c.Write(buf.Bytes())
+
+	if err != nil {
+		if err == io.EOF {
+			return nil, noconn
+		} else {
+			return nil, err
+		}
+	}
 
 	// reset the buffer for the received content
 	buf.Reset()
@@ -272,8 +391,13 @@ func Do(conn *VoldemortConn, input []byte) (output []byte, err error) {
 	// Get first 4 bytes from conn to get length of response from voldemort
 	var buflen [4]byte
 	n, err := conn.c.Read(buflen[0:4])
+
 	if err != nil {
-		return nil, err
+		if err == io.EOF {
+			return nil, noconn
+		} else {
+			return nil, err
+		}
 	}
 
 	// write correct length of response to buffer
@@ -291,14 +415,27 @@ func Do(conn *VoldemortConn, input []byte) (output []byte, err error) {
 	}
 
 	buf.Reset()
-	var respBuf [512]byte
+	var tempBuf []byte
 
-	n, err = conn.c.Read(respBuf[0:respLen])
+	static_len := 512
 
-	buf.Write(respBuf[0:n])
+	rem := math.Mod(float64(respLen), 512)
+	loop_count := (int(respLen) - int(rem)) / 512
 
-	if err != nil {
-		return nil, err
+	for i := 0; i <= int(loop_count); i++ {
+		tempBuf = make([]byte, 512)
+
+		n, err = conn.c.Read(tempBuf[0:static_len])
+
+		if err != nil {
+			if err == io.EOF {
+				return nil, noconn
+			} else {
+				return nil, err
+			}
+		}
+
+		buf.Write(tempBuf[0:n])
 	}
 
 	return buf.Bytes(), nil
