@@ -1,7 +1,7 @@
 go-voldemort
 ============
 
-### DEFINITELY NOT PRODUCTION READY
+### STILL IN DEVELOPMENT - EXPECT CHANGES
 
 Voldermort client written in Go
 
@@ -14,4 +14,5 @@ There are advantages to both but you need to understand why you are choosing one
 ## Links
 
 Voldemort http://www.voldemort-project.com
+
 Voldemort Wiki https://github.com/voldemort/voldemort/wiki
