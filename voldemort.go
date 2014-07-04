@@ -28,11 +28,16 @@ type VoldemortConn struct {
 	mu sync.Mutex
 }
 
+// The cluster struct holds all the information taken from the Voldemort cluster when it's first connected
 type Cluster struct {
-	Name    string   `xml:"name"`
+	// Name of Voldemort cluster
+	Name string `xml:"name"`
+
+	// Array of Voldemort servers
 	Servers []Server `xml:"server"`
 }
 
+// The server struct holds all the information about a Voldermort server
 type Server struct {
 	Id         int    `xml:"id"`
 	Host       string `xml:"host"`
@@ -42,36 +47,21 @@ type Server struct {
 	State      bool
 }
 
+// Returns a VoldemortConn that can be used to talk to a Voldemort cluster
 func Dial(raddr *net.TCPAddr, proto string) (c *VoldemortConn, err error) {
 
 	conn, err := net.DialTCP("tcp", nil, raddr)
 
-	if err != nil {
-		return nil, err
-	}
-
-	conn.Write([]byte(proto))
-
-	result := bytes.NewBuffer(nil)
-	var buf [2]byte // protocol response only returns a 2 byte response - ok or no
-
-	_, err = conn.Read(buf[0:])
+	//conn, err := net.Dial(network, address)
 
 	if err != nil {
 		return nil, err
 	}
 
-	result.Write(buf[0:2])
+	err = setProtocol(conn, proto)
 
-	// protocol response doesn't return a new line
-	if string(result.Bytes()) != "ok" {
-		if string(result.Bytes()) == "no" {
-			err = errors.New(fmt.Sprintf("bad protocol set response : %s", result.Bytes()))
-			return nil, err
-		} else {
-			err = errors.New(fmt.Sprintf("unknown protocol response : %s", result.Bytes()))
-			return nil, err
-		}
+	if err != nil {
+		return nil, err
 	}
 
 	vc := new(VoldemortConn)
@@ -85,11 +75,39 @@ func Dial(raddr *net.TCPAddr, proto string) (c *VoldemortConn, err error) {
 		log.Println("warning - this client will only be able to talk to the current node")
 	}
 
-	go watchcluster()
-
 	vc.cl = cl
 
 	return vc, nil
+
+}
+
+func setProtocol(conn *net.TCPConn, proto string) (err error) {
+
+	_, err = conn.Write([]byte(proto))
+
+	result := bytes.NewBuffer(nil)
+	var buf [2]byte // protocol response only returns a 2 byte response - ok or no
+
+	_, err = conn.Read(buf[0:])
+
+	if err != nil {
+		return err
+	}
+
+	result.Write(buf[0:2])
+
+	// protocol response doesn't return a new line
+	if string(result.Bytes()) != "ok" {
+		if string(result.Bytes()) == "no" {
+			err = errors.New(fmt.Sprintf("bad protocol set response : %s", result.Bytes()))
+			return err
+		} else {
+			err = errors.New(fmt.Sprintf("unknown protocol response : %s", result.Bytes()))
+			return err
+		}
+	}
+
+	return nil
 
 }
 
@@ -109,13 +127,7 @@ func bootstrap(vc *VoldemortConn) (n *Cluster, err error) {
 		}
 	}
 
-	fmt.Println(vc.cl)
-
 	return n, nil
-
-}
-
-func watchcluster() {
 
 }
 
@@ -227,8 +239,6 @@ func getclusterdata(conn *VoldemortConn) (cl *Cluster, err error) {
 	if err != nil {
 		return nil, err
 	}
-
-	fmt.Println(cl)
 
 	conn.cl = cl
 
@@ -345,7 +355,10 @@ func Put(conn *VoldemortConn, store string, key string, value string) (b bool, e
 
 }
 
-func Close(conn *VoldemortConn) {
+func (conn *VoldemortConn) Close() {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+
 	conn.c.Close()
 }
 
