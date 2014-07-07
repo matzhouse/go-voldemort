@@ -18,6 +18,12 @@ import (
 
 // The VoldemortConn struct is used to hold all the data for the Voldemort cluster you need to query
 type VoldemortConn struct {
+	// String address of server this conn is using
+	s string
+
+	// Voldemort protocol
+	proto string
+
 	// TCP connection used to talk to Voldemort instance
 	c *net.TCPConn
 
@@ -65,6 +71,10 @@ func Dial(raddr *net.TCPAddr, proto string) (c *VoldemortConn, err error) {
 	}
 
 	vc := new(VoldemortConn)
+
+	vc.s = raddr.String()
+	vc.proto = proto
+
 	vc.c = conn
 	vc.c.SetNoDelay(true)
 
@@ -360,10 +370,6 @@ func (conn *VoldemortConn) Close() {
 	defer conn.mu.Unlock()
 
 	conn.c.Close()
-}
-
-func reconnect(conn *VoldemortConn) {
-
 }
 
 // creates the voldemort request <4 byte length, big endian encoded><message bytes> and receives the same
