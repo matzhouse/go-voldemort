@@ -141,6 +141,9 @@ func (vp *VoldemortPool) reconnect(vc *VoldemortConn) {
 
 			log.Printf("new connection found - %s", vc.s)
 
+			// Wait 1 minute before actually doing queries to let the node catch up
+			time.Sleep(1 * time.Minute)
+
 			vp.ReleaseConn(newvc, true)
 			return
 
