@@ -208,7 +208,7 @@ func (vp *VoldemortPool) ReleaseConn(vc *VoldemortConn, state bool) {
 	if !state {
 		// OH dear - it looks like a conn has failed - time to sort that out!
 		// we need a new conn here
-		log.Println("server failure - %s", vc.s)
+		log.Printf("server failure - %s", vc.s)
 		vp.failures <- vc
 		return
 	}
