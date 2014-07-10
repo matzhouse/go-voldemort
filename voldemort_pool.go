@@ -107,14 +107,14 @@ func (vp *VoldemortPool) GetConn() (vc *VoldemortConn, err error) {
 
 	// return after 250 milliseconds regardless of result - protect the app!
 	select {
-	case _ = <-time.After(time.Millisecond * 250):
-		return nil, errors.New("timeout getting a connection to voldemort")
 	case vc = <-vp.pool:
 		// lock the pool count and decrease
 		vp.size_lock.Lock()
 		vp.size--
 		vp.size_lock.Unlock()
 		return vc, nil
+	case _ = <-time.After(time.Millisecond * 250):
+		return nil, errors.New("timeout getting a connection to voldemort")
 	}
 
 }
