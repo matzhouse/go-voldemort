@@ -21,11 +21,11 @@ type VoldemortPool struct {
 
 	// keep a count of active servers - servers that are capable of being queried
 	active      int
-	active_lock *sync.Mutex
+	active_lock sync.Mutex
 
 	// Track size of pool - the pool in the amount of servers not currently out on jobs
 	size      int
-	size_lock *sync.Mutex
+	size_lock sync.Mutex
 
 	closed bool // state of the pool - false if open/true if closed
 }
