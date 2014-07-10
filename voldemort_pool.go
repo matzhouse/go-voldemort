@@ -23,6 +23,8 @@ type VoldemortPool struct {
 	active      int
 	active_lock sync.Mutex
 
+	timeout time.Duration // timeout before getConn returns an error
+
 	// Track size of pool - the pool in the amount of servers not currently out on jobs
 	size      int
 	size_lock sync.Mutex
@@ -30,7 +32,7 @@ type VoldemortPool struct {
 	closed bool // state of the pool - false if open/true if closed
 }
 
-func NewPool(bserver *net.TCPAddr, proto string) (*VoldemortPool, error) {
+func NewPool(bserver *net.TCPAddr, proto string, pool_timeout time.Duration) (*VoldemortPool, error) {
 
 	// we need to dial one server in the beginning to get all the details against the cluster
 	vc, err := Dial(bserver, proto)
@@ -89,7 +91,7 @@ func NewPool(bserver *net.TCPAddr, proto string) (*VoldemortPool, error) {
 	}
 
 	// Initialise the pool with all the required variables
-	vp := &VoldemortPool{pool: p, failures: f, size: poolSize, active: activeCount, servers: servers, closed: false}
+	vp := &VoldemortPool{pool: p, failures: f, size: poolSize, timeout: pool_timeout, active: activeCount, servers: servers, closed: false}
 
 	// start the watcher!
 	go vp.watcher()
@@ -105,16 +107,30 @@ func (vp *VoldemortPool) GetConn() (vc *VoldemortConn, err error) {
 		return nil, errors.New("no active servers available")
 	}
 
-	// return after 250 milliseconds regardless of result - protect the app!
-	select {
-	case vc = <-vp.pool:
+	if vp.timeout == 0 {
+
+		vc = <-vp.pool
+
 		// lock the pool count and decrease
 		vp.size_lock.Lock()
 		vp.size--
 		vp.size_lock.Unlock()
 		return vc, nil
-	case _ = <-time.After(time.Millisecond * 250):
-		return nil, errors.New("timeout getting a connection to voldemort")
+
+	} else {
+
+		// return after 250 milliseconds regardless of result - protect the app!
+		select {
+		case vc = <-vp.pool:
+			// lock the pool count and decrease
+			vp.size_lock.Lock()
+			vp.size--
+			vp.size_lock.Unlock()
+			return vc, nil
+		case _ = <-time.After(vp.timeout):
+			return nil, errors.New("timeout getting a connection to voldemort")
+		}
+
 	}
 
 }
