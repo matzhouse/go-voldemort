@@ -1,9 +1,11 @@
 package voldemort
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -17,8 +19,15 @@ type VoldemortPool struct {
 	// if a conn goes down, we should then be able to find the one with less and therefore retry
 	servers map[string]int
 
-	// Track size of pool
-	size int
+	// keep a count of active servers - servers that are capable of being queried
+	active      int
+	active_lock *sync.Mutex
+
+	// Track size of pool - the pool in the amount of servers not currently out on jobs
+	size      int
+	size_lock *sync.Mutex
+
+	closed bool // state of the pool - false if open/true if closed
 }
 
 func NewPool(bserver *net.TCPAddr, proto string) (*VoldemortPool, error) {
@@ -47,6 +56,8 @@ func NewPool(bserver *net.TCPAddr, proto string) (*VoldemortPool, error) {
 	// initialise the map - this creates the structure and all counters (int) will be 0
 	servers := make(map[string]int)
 
+	var activeCount int
+
 	for j := 0; j < 1; j++ {
 
 		for _, v := range vc.cl.Servers {
@@ -66,6 +77,7 @@ func NewPool(bserver *net.TCPAddr, proto string) (*VoldemortPool, error) {
 				continue
 			}
 
+			activeCount++
 			// Update the connection counter for this server
 			servers[faddr]++
 
@@ -77,7 +89,7 @@ func NewPool(bserver *net.TCPAddr, proto string) (*VoldemortPool, error) {
 	}
 
 	// Initialise the pool with all the required variables
-	vp := &VoldemortPool{pool: p, failures: f, size: poolSize, servers: servers}
+	vp := &VoldemortPool{pool: p, failures: f, size: poolSize, active: activeCount, servers: servers, closed: false}
 
 	// start the watcher!
 	go vp.watcher()
@@ -87,14 +99,23 @@ func NewPool(bserver *net.TCPAddr, proto string) (*VoldemortPool, error) {
 }
 
 // Get a VoldemortConn struct from the channel and return it
-func (vp *VoldemortPool) GetConn() (vc *VoldemortConn) {
+func (vp *VoldemortPool) GetConn() (vc *VoldemortConn, err error) {
 
-	vc = <-vp.pool
+	if vp.active == 0 {
+		return nil, errors.New("no active servers available")
+	}
 
-	// decrease the size param - not locked or anything so mainly used for simple stats
-	vp.size--
-
-	return
+	// return after 250 milliseconds regardless of result - protect the app!
+	select {
+	case _ = <-time.After(time.Millisecond * 250):
+		return nil, errors.New("timeout getting a connection to voldemort")
+	case vc = <-vp.pool:
+		// lock the pool count and decrease
+		vp.size_lock.Lock()
+		vp.size--
+		vp.size_lock.Unlock()
+		return vc, nil
+	}
 
 }
 
@@ -109,6 +130,11 @@ func (vp *VoldemortPool) watcher() {
 	for {
 
 		vc = <-vp.failures
+
+		// decrease the count under lock
+		vp.active_lock.Lock()
+		vp.active--
+		vp.active_lock.Unlock()
 
 		log.Println("failure collected")
 
@@ -144,6 +170,11 @@ func (vp *VoldemortPool) reconnect(vc *VoldemortConn) {
 			// Wait 1 minute before actually doing queries to let the node catch up
 			time.Sleep(1 * time.Minute)
 
+			// increase the count under lock
+			vp.active_lock.Lock()
+			vp.active++
+			vp.active_lock.Unlock()
+
 			vp.ReleaseConn(newvc, true)
 			return
 
@@ -178,16 +209,19 @@ func (vp *VoldemortPool) ReleaseConn(vc *VoldemortConn, state bool) {
 		// OH dear - it looks like a conn has failed - time to sort that out!
 		// we need a new conn here
 		log.Println("server failure - %s", vc.s)
-
 		vp.failures <- vc
-
 		return
-
 	}
 
-	vp.pool <- vc
+	// make sure the pool isn't closed
+	if !vp.closed {
+		vp.pool <- vc
+	}
 
+	// up the count again
+	vp.size_lock.Lock()
 	vp.size++
+	vp.size_lock.Unlock()
 
 	return
 
@@ -197,13 +231,18 @@ func (vp *VoldemortPool) Empty() {
 
 	var vc *VoldemortConn
 
-	for i := 0; i < vp.size; i++ {
+	// close the pool
+	vp.closed = true
+	close(vp.pool)
 
-		log.Println("closing conn - %s", vc.s)
-		vc = vp.GetConn()
+	// now that we have closed the pool run through what's left on it and close all the conns
+	select {
+	case vc = <-vp.pool:
+		log.Printf("closing conn - %s", vc.s)
 		vc.Close()
-
+	default:
+		return
 	}
 
-	log.Println("all connections closed")
+	log.Println("all voldemort connections closed")
 }
