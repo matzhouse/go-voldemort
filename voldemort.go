@@ -10,7 +10,6 @@ import (
 	vproto "github.com/matzhouse/go-voldemort-protobufs"
 	"io"
 	"log"
-	"math"
 	"net"
 	"sync"
 	"time"
@@ -434,17 +433,16 @@ func Do(conn *VoldemortConn, input []byte) (output []byte, err error) {
 	}
 
 	buf.Reset()
+
 	var tempBuf []byte
+	var totalcount int
 
-	static_len := 512
+	for {
 
-	rem := math.Mod(float64(respLen), 512)
-	loop_count := (int(respLen) - int(rem)) / 512
-
-	for i := 0; i <= int(loop_count); i++ {
 		tempBuf = make([]byte, 512)
+		n, err = conn.c.Read(tempBuf[0:512])
 
-		n, err = conn.c.Read(tempBuf[0:static_len])
+		totalcount = totalcount + n
 
 		if err != nil {
 			if err == io.EOF {
@@ -455,6 +453,11 @@ func Do(conn *VoldemortConn, input []byte) (output []byte, err error) {
 		}
 
 		buf.Write(tempBuf[0:n])
+
+		if int(respLen) == totalcount {
+			break
+		}
+
 	}
 
 	return buf.Bytes(), nil
