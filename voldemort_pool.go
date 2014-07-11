@@ -96,6 +96,8 @@ func NewPool(bserver *net.TCPAddr, proto string, pool_timeout time.Duration) (*V
 	// start the watcher!
 	go vp.watcher()
 
+	vc.Close()
+
 	return vp, nil
 
 }
@@ -230,7 +232,7 @@ func (vp *VoldemortPool) ReleaseConn(vc *VoldemortConn, state bool) {
 	}
 
 	// make sure the pool isn't closed
-	if !vp.closed {
+	if vp.closed == false {
 		vp.pool <- vc
 	}
 
