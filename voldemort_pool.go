@@ -113,11 +113,6 @@ func (vp *VoldemortPool) GetConn() (vc *VoldemortConn, err error) {
 
 		vc = <-vp.pool
 
-		// lock the pool count and decrease
-		//vp.size_lock.Lock()
-		//vp.size--
-		//vp.size_lock.Unlock()
-
 		return vc, nil
 
 	} else {
@@ -125,10 +120,7 @@ func (vp *VoldemortPool) GetConn() (vc *VoldemortConn, err error) {
 		// return after 250 milliseconds regardless of result - protect the app!
 		select {
 		case vc = <-vp.pool:
-			// lock the pool count and decrease
-			/*vp.size_lock.Lock()
-			vp.size--
-			vp.size_lock.Unlock()*/
+
 			return vc, nil
 		case _ = <-time.After(vp.timeout):
 			return nil, errors.New("timeout getting a connection to voldemort")
@@ -149,11 +141,6 @@ func (vp *VoldemortPool) watcher() {
 	for {
 
 		vc = <-vp.failures
-
-		// decrease the count under lock
-		/*vp.active_lock.Lock()
-		vp.active--
-		vp.active_lock.Unlock()*/
 
 		log.Println("failure collected")
 
@@ -188,11 +175,6 @@ func (vp *VoldemortPool) reconnect(vc *VoldemortConn) {
 
 			// Wait 1 minute before actually doing queries to let the node catch up
 			time.Sleep(2 * time.Second)
-
-			// increase the count under lock
-			/*vp.active_lock.Lock()
-			vp.active++
-			vp.active_lock.Unlock()*/
 
 			vp.ReleaseConn(newvc, true)
 			return
@@ -236,11 +218,6 @@ func (vp *VoldemortPool) ReleaseConn(vc *VoldemortConn, state bool) {
 	if vp.closed == false {
 		vp.pool <- vc
 	}
-
-	// up the count again
-	/*vp.size_lock.Lock()
-	vp.size++
-	vp.size_lock.Unlock()*/
 
 	return
 
