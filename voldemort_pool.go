@@ -23,7 +23,8 @@ type VoldemortPool struct {
 	active      int
 	active_lock sync.Mutex
 
-	timeout time.Duration // timeout before getConn returns an error
+	timeout    time.Duration // timeout before getConn returns an error
+	conn_count int           // number of connections per server
 
 	// Track size of pool - the pool in the amount of servers not currently out on jobs
 	size      int
@@ -32,7 +33,7 @@ type VoldemortPool struct {
 	closed bool // state of the pool - false if open/true if closed
 }
 
-func NewPool(bserver *net.TCPAddr, proto string, pool_timeout time.Duration) (*VoldemortPool, error) {
+func NewPool(bserver *net.TCPAddr, proto string, pool_timeout time.Duration, conn_count int) (*VoldemortPool, error) {
 
 	// we need to dial one server in the beginning to get all the details against the cluster
 	vc, err := Dial(bserver, proto)
@@ -41,11 +42,11 @@ func NewPool(bserver *net.TCPAddr, proto string, pool_timeout time.Duration) (*V
 		return nil, err
 	}
 
-	// Find out how many servers there are so we can make a nice pool - only ony of each for now!
+	// Find out how many servers there are so we can make a nice pool.
 	poolSize := len(vc.cl.Servers)
 
-	// This channel will be used to hold all the conns and distribute them to clients
-	p := make(chan *VoldemortConn, poolSize)
+	// This channel will be used to hold all the conns and distribute them to clients - size is number of available server multiplied by the number of connections per server
+	p := make(chan *VoldemortConn, poolSize*conn_count)
 
 	// The failure chan will be unbuffered
 	f := make(chan *VoldemortConn)
@@ -60,7 +61,8 @@ func NewPool(bserver *net.TCPAddr, proto string, pool_timeout time.Duration) (*V
 
 	var activeCount int
 
-	for j := 0; j < 1; j++ {
+	// create the correct number of connections per server
+	for j := 0; j < conn_count; j++ {
 
 		for _, v := range vc.cl.Servers {
 
@@ -91,11 +93,20 @@ func NewPool(bserver *net.TCPAddr, proto string, pool_timeout time.Duration) (*V
 	}
 
 	// Initialise the pool with all the required variables
-	vp := &VoldemortPool{pool: p, failures: f, size: poolSize, timeout: pool_timeout, active: activeCount, servers: servers, closed: false}
+	vp := &VoldemortPool{
+		pool:     p,
+		failures: f,
+		size:     poolSize,
+		timeout:  pool_timeout,
+		active:   activeCount,
+		servers:  servers,
+		closed:   false,
+	}
 
 	// start the watcher!
 	go vp.watcher()
 
+	// close the original connection to Voldemort - we don't need it now we have the pool.
 	vc.Close()
 
 	return vp, nil

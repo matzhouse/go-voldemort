@@ -77,7 +77,7 @@ func Dial(raddr *net.TCPAddr, proto string) (c *VoldemortConn, err error) {
 	vc.c = conn
 	vc.c.SetNoDelay(true)
 
-	cl, err := bootstrap(vc)
+	cl, err := vc.bootstrap()
 
 	if err != nil {
 		log.Println(err)
@@ -122,7 +122,7 @@ func setProtocol(conn *net.TCPConn, proto string) (err error) {
 
 func (vc *VoldemortConn) bootstrap() (n *Cluster, err error) {
 
-	n, err = getclusterdata(vc)
+	n, err = vc.getclusterdata()
 
 	if err != nil {
 		return nil, err
@@ -157,7 +157,7 @@ func (conn *VoldemortConn) get(store string, req *vproto.GetRequest, shouldroute
 		return nil, err
 	}
 
-	output, err := Do(conn, input)
+	output, err := conn.Do(input)
 
 	if err != nil {
 		return nil, err
@@ -202,7 +202,7 @@ func (conn *VoldemortConn) put(store string, req *vproto.PutRequest) (resp *vpro
 		return nil, err
 	}
 
-	output, err := Do(conn, input)
+	output, err := conn.Do(input)
 
 	if err != nil {
 		return nil, err
@@ -230,7 +230,7 @@ func (conn *VoldemortConn) getclusterdata() (cl *Cluster, err error) {
 		Key: []byte("cluster.xml"),
 	}
 
-	resp, err := get(conn, "metadata", req, false)
+	resp, err := conn.get("metadata", req, false)
 
 	if err != nil {
 		return nil, err
@@ -261,7 +261,7 @@ func (conn *VoldemortConn) getversion(store string, key string) (vc *vproto.Vect
 		Key: []byte(key),
 	}
 
-	resp, err := get(conn, store, req, true)
+	resp, err := conn.get(store, req, true)
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +310,7 @@ func (conn *VoldemortConn) Get(store string, key string) (value string, err erro
 		Key: []byte(key),
 	}
 
-	resp, err := get(conn, store, req, true)
+	resp, err := conn.get(store, req, true)
 
 	if err != nil {
 		return "", err
@@ -334,7 +334,7 @@ func (conn *VoldemortConn) Put(store string, key string, value string) (b bool, 
 		return false, err
 	}
 
-	vc, err := getversion(conn, store, key)
+	vc, err := conn.getversion(store, key)
 
 	if err != nil {
 		return false, err
@@ -348,7 +348,7 @@ func (conn *VoldemortConn) Put(store string, key string, value string) (b bool, 
 		},
 	}
 
-	resp, err := put(conn, store, req)
+	resp, err := conn.put(store, req)
 
 	if err != nil {
 		return false, err
