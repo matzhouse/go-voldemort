@@ -77,7 +77,7 @@ func Dial(raddr *net.TCPAddr, proto string) (c *VoldemortConn, err error) {
 	vc.c = conn
 	vc.c.SetNoDelay(true)
 
-	cl, err := bootstrap(vc)
+	cl, err := vc.bootstrap()
 
 	if err != nil {
 		log.Println(err)
@@ -120,9 +120,9 @@ func setProtocol(conn *net.TCPConn, proto string) (err error) {
 
 }
 
-func bootstrap(vc *VoldemortConn) (n *Cluster, err error) {
+func (vc *VoldemortConn) bootstrap() (n *Cluster, err error) {
 
-	n, err = getclusterdata(vc)
+	n, err = vc.getclusterdata()
 
 	if err != nil {
 		return nil, err
@@ -140,7 +140,7 @@ func bootstrap(vc *VoldemortConn) (n *Cluster, err error) {
 
 }
 
-func get(conn *VoldemortConn, store string, req *vproto.GetRequest, shouldroute bool) (resp *vproto.GetResponse, err error) {
+func (conn *VoldemortConn) get(store string, req *vproto.GetRequest, shouldroute bool) (resp *vproto.GetResponse, err error) {
 
 	rt := vproto.RequestType(0)
 
@@ -157,7 +157,7 @@ func get(conn *VoldemortConn, store string, req *vproto.GetRequest, shouldroute 
 		return nil, err
 	}
 
-	output, err := Do(conn, input)
+	output, err := conn.Do(input)
 
 	if err != nil {
 		return nil, err
@@ -184,7 +184,7 @@ func get(conn *VoldemortConn, store string, req *vproto.GetRequest, shouldroute 
 
 }
 
-func put(conn *VoldemortConn, store string, req *vproto.PutRequest) (resp *vproto.PutResponse, err error) {
+func (conn *VoldemortConn) put(store string, req *vproto.PutRequest) (resp *vproto.PutResponse, err error) {
 
 	Routingdecision := true
 	rt := vproto.RequestType(2)
@@ -202,7 +202,7 @@ func put(conn *VoldemortConn, store string, req *vproto.PutRequest) (resp *vprot
 		return nil, err
 	}
 
-	output, err := Do(conn, input)
+	output, err := conn.Do(input)
 
 	if err != nil {
 		return nil, err
@@ -224,13 +224,13 @@ func put(conn *VoldemortConn, store string, req *vproto.PutRequest) (resp *vprot
 
 }
 
-func getclusterdata(conn *VoldemortConn) (cl *Cluster, err error) {
+func (conn *VoldemortConn) getclusterdata() (cl *Cluster, err error) {
 
 	req := &vproto.GetRequest{
 		Key: []byte("cluster.xml"),
 	}
 
-	resp, err := get(conn, "metadata", req, false)
+	resp, err := conn.get("metadata", req, false)
 
 	if err != nil {
 		return nil, err
@@ -255,13 +255,13 @@ func getclusterdata(conn *VoldemortConn) (cl *Cluster, err error) {
 
 }
 
-func getversion(conn *VoldemortConn, store string, key string) (vc *vproto.VectorClock, err error) {
+func (conn *VoldemortConn) getversion(store string, key string) (vc *vproto.VectorClock, err error) {
 
 	req := &vproto.GetRequest{
 		Key: []byte(key),
 	}
 
-	resp, err := get(conn, store, req, true)
+	resp, err := conn.get(store, req, true)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +299,7 @@ func getversion(conn *VoldemortConn, store string, key string) (vc *vproto.Vecto
 }
 
 // Nice getter for a string key returning a string value
-func Get(conn *VoldemortConn, store string, key string) (value string, err error) {
+func (conn *VoldemortConn) Get(store string, key string) (value string, err error) {
 
 	if store == "" || key == "" {
 		err = errors.New("store and key cannot be empty")
@@ -310,7 +310,7 @@ func Get(conn *VoldemortConn, store string, key string) (value string, err error
 		Key: []byte(key),
 	}
 
-	resp, err := get(conn, store, req, true)
+	resp, err := conn.get(store, req, true)
 
 	if err != nil {
 		return "", err
@@ -327,14 +327,14 @@ func Get(conn *VoldemortConn, store string, key string) (value string, err error
 
 }
 
-func Put(conn *VoldemortConn, store string, key string, value string) (b bool, err error) {
+func (conn *VoldemortConn) Put(store string, key string, value string) (b bool, err error) {
 
 	if store == "" || key == "" {
 		err = errors.New("store and key cannot be empty")
 		return false, err
 	}
 
-	vc, err := getversion(conn, store, key)
+	vc, err := conn.getversion(store, key)
 
 	if err != nil {
 		return false, err
@@ -348,7 +348,7 @@ func Put(conn *VoldemortConn, store string, key string, value string) (b bool, e
 		},
 	}
 
-	resp, err := put(conn, store, req)
+	resp, err := conn.put(store, req)
 
 	if err != nil {
 		return false, err
@@ -372,7 +372,7 @@ func (conn *VoldemortConn) Close() {
 }
 
 // creates the voldemort request <4 byte length, big endian encoded><message bytes> and receives the same
-func Do(conn *VoldemortConn, input []byte) (output []byte, err error) {
+func (conn *VoldemortConn) Do(input []byte) (output []byte, err error) {
 
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
