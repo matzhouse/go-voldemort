@@ -218,8 +218,6 @@ func (vp *VoldemortPool) reconnect(vc *VoldemortConn) {
 
 	}
 
-	return
-
 }
 
 func (vp *VoldemortPool) ReleaseConn(vc *VoldemortConn, state bool) {
