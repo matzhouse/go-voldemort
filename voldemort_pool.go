@@ -7,6 +7,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/rcrowley/go-metrics"
 )
 
 type VoldemortPool struct {
@@ -31,12 +33,18 @@ type VoldemortPool struct {
 	size_lock sync.Mutex
 
 	closed bool // state of the pool - false if open/true if closed
+
+	Metrics metrics.Registry
 }
 
 func NewPool(bserver *net.TCPAddr, proto string, pool_timeout time.Duration, conn_count int) (*VoldemortPool, error) {
 
 	// we need to dial one server in the beginning to get all the details against the cluster
-	vc, err := Dial(bserver, proto)
+	vc, err := Dial(
+		bserver,
+		proto,
+		metrics.NewRegistry(),
+	)
 
 	if err != nil {
 		return nil, err
@@ -61,6 +69,8 @@ func NewPool(bserver *net.TCPAddr, proto string, pool_timeout time.Duration, con
 
 	var activeCount int
 
+	reg := metrics.NewRegistry()
+
 	// create the correct number of connections per server
 	for j := 0; j < conn_count; j++ {
 
@@ -75,7 +85,7 @@ func NewPool(bserver *net.TCPAddr, proto string, pool_timeout time.Duration, con
 				log.Fatal(err)
 			}
 
-			nvc, err = Dial(addr, proto)
+			nvc, err = Dial(addr, proto, reg)
 			if err != nil {
 				log.Printf("server - %s - unavailable - cannot add to the pool", addr)
 				continue
@@ -101,6 +111,7 @@ func NewPool(bserver *net.TCPAddr, proto string, pool_timeout time.Duration, con
 		active:   activeCount,
 		servers:  servers,
 		closed:   false,
+		Metrics:  reg,
 	}
 
 	// start the watcher!
@@ -110,6 +121,61 @@ func NewPool(bserver *net.TCPAddr, proto string, pool_timeout time.Duration, con
 	vc.Close()
 
 	return vp, nil
+
+}
+
+type Servermetrics struct {
+	Servers []*SMetric
+}
+
+type SMetric struct {
+	Name  string
+	Count int64
+	Mean  float64
+	Max   int64
+	Min   int64
+}
+
+func (vp *VoldemortPool) Metricdata() (Ss *Servermetrics) {
+
+	Ss = &Servermetrics{
+		Servers: []*SMetric{},
+	}
+
+	var s *SMetric
+
+	vp.Metrics.Each(func(name string, i interface{}) {
+
+		switch metric := i.(type) {
+		case metrics.Timer:
+			t := metric.Snapshot()
+
+			s = &SMetric{
+				Name:  name,
+				Count: t.Count(),
+				Mean:  t.Mean(),
+				Max:   t.Max(),
+				Min:   t.Min(),
+			}
+
+			Ss.Servers = append(Ss.Servers, s)
+
+			/*
+				fmt.Fprintf(w, "%s \n", name)
+
+				fmt.Fprintf(
+					w,
+					"Mean: %b \nMax: %d \nMin: %d \nCount: %d \n",
+					t.Mean(),
+					t.Max(),
+					t.Min(),
+					t.Count(),
+				)
+			*/
+		}
+	})
+
+	return
 
 }
 
@@ -178,7 +244,7 @@ func (vp *VoldemortPool) reconnect(vc *VoldemortConn) {
 			log.Printf("reconnecting to %s - address error - %s", vc.s, err)
 		}
 
-		newvc, err := Dial(vaddr, vc.proto)
+		newvc, err := Dial(vaddr, vc.proto, vp.Metrics)
 
 		if err == nil {
 

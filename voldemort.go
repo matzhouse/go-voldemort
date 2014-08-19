@@ -13,6 +13,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/rcrowley/go-metrics"
 )
 
 // The VoldemortConn struct is used to hold all the data for the Voldemort cluster you need to query
@@ -31,6 +33,9 @@ type VoldemortConn struct {
 
 	// A simple mutex to make the conn thread safe
 	mu sync.Mutex
+
+	GetMetrics metrics.Timer
+	PutMetrics metrics.Timer
 }
 
 // The cluster struct holds all the information taken from the Voldemort cluster when it's first connected
@@ -53,10 +58,10 @@ type Server struct {
 }
 
 // Returns a VoldemortConn that can be used to talk to a Voldemort cluster
-func Dial(raddr *net.TCPAddr, proto string) (c *VoldemortConn, err error) {
+func Dial(raddr *net.TCPAddr, proto string, reg metrics.Registry) (c *VoldemortConn, err error) {
 
 	conn, err := net.DialTCP("tcp", nil, raddr)
-
+	conn.SetNoDelay(true)
 	//conn, err := net.Dial(network, address)
 
 	if err != nil {
@@ -69,13 +74,23 @@ func Dial(raddr *net.TCPAddr, proto string) (c *VoldemortConn, err error) {
 		return nil, err
 	}
 
-	vc := new(VoldemortConn)
+	vc := &VoldemortConn{
+		s:          raddr.String(),
+		proto:      proto,
+		c:          conn,
+		GetMetrics: metrics.NewTimer(),
+		PutMetrics: metrics.NewTimer(),
+	}
 
-	vc.s = raddr.String()
-	vc.proto = proto
+	reg.Register(raddr.String(), vc.GetMetrics)
+	reg.Register(raddr.String(), vc.PutMetrics)
 
-	vc.c = conn
-	vc.c.SetNoDelay(true)
+	/*
+		vc := new(VoldemortConn)
+
+		vc.s = raddr.String()
+		vc.proto = proto
+	*/
 
 	cl, err := vc.bootstrap()
 
@@ -118,6 +133,14 @@ func setProtocol(conn *net.TCPConn, proto string) (err error) {
 
 	return nil
 
+}
+
+func (vc *VoldemortConn) Metrics() (reg metrics.Registry) {
+	return vc.Metrics()
+}
+
+func (vc *VoldemortConn) Server() (name string) {
+	return vc.s
 }
 
 func (vc *VoldemortConn) bootstrap() (n *Cluster, err error) {
@@ -310,7 +333,12 @@ func (conn *VoldemortConn) Get(store string, key string) (value string, err erro
 		Key: []byte(key),
 	}
 
+	// update a metrics registry
+	start := time.Now()
 	resp, err := conn.get(store, req, true)
+	elapsed := time.Since(start)
+
+	conn.GetMetrics.Update(elapsed)
 
 	if err != nil {
 		return "", err
