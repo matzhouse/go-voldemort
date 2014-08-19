@@ -61,12 +61,13 @@ type Server struct {
 func Dial(raddr *net.TCPAddr, proto string, reg metrics.Registry) (c *VoldemortConn, err error) {
 
 	conn, err := net.DialTCP("tcp", nil, raddr)
-	conn.SetNoDelay(true)
 	//conn, err := net.Dial(network, address)
 
 	if err != nil {
 		return nil, err
 	}
+	
+	conn.SetNoDelay(true)
 
 	err = setProtocol(conn, proto)
 
